@@ -1,10 +1,7 @@
-use std::marker::PhantomData;
 
-use bincode::{de::read::IoReader, DefaultOptions, Options};
+use bincode::{Options};
 use serde::{
-    de::{DeserializeSeed, MapAccess, SeqAccess, Visitor},
-    ser::SerializeMap,
-    Deserialize, Deserializer, Serialize, Serializer,
+    de::{DeserializeSeed, SeqAccess, Visitor}, Deserializer, Serialize,
 };
 use serde_json::Map;
 

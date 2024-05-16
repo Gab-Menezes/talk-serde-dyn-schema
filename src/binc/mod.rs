@@ -6,8 +6,8 @@ mod ser;
 
 #[cfg(test)]
 mod test {
-    use super::{deserialize, serialize, serialize_into};
-    use crate::{array_def, struct_def, ty::Ty, JsonValue};
+    use super::{deserialize, serialize};
+    use crate::{array_def, struct_def, ty::Ty};
 
     // #[test]
     // fn bool_roundtrip() {
