@@ -1,10 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use std::time::Duration;
 use talk_serde_dyn_schema::{
-    array_def, fast,
-    flatbin::{Builder, FlatbinBuf},
-    slow, struct_def,
-    ty::Ty,
+    array_def, binc, fast, flatbin::{Builder, FlatbinBuf}, slow, struct_def, ty::Ty
 };
 
 fn criterion_benchmark(c: &mut Criterion) {
@@ -48,8 +45,10 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     let json = serde_json::to_string_pretty(&doc).unwrap();
     let binary = slow::deserialize_alloc(&schema, &doc).unwrap();
+    let binc_binary = binc::deserialize_alloc(&schema, &doc).unwrap();
 
     let mut buffer = FlatbinBuf::new();
+    let mut binc_buffer = Vec::new();
 
     let mut group = c.benchmark_group("deserialize");
     group.measurement_time(Duration::from_secs(30));
@@ -57,13 +56,32 @@ fn criterion_benchmark(c: &mut Criterion) {
         b.iter(|| {
             buffer.clear();
             let doc = serde_json::from_str(&json).unwrap();
-            slow::deserialize(black_box(&schema), black_box(&doc), Builder::new(&mut buffer))
+            slow::deserialize(black_box(&schema), black_box(&doc), Builder::new(&mut buffer)).unwrap()
+        })
+    });
+    group.bench_function("deserialize_slow_with_doc", |b| {
+        b.iter(|| {
+            buffer.clear();
+            slow::deserialize(black_box(&schema), black_box(&doc), Builder::new(&mut buffer)).unwrap()
+        })
+    });
+    group.bench_function("deserialize_binc", |b| {
+        b.iter(|| {
+            binc_buffer.clear();
+            let doc = serde_json::from_str(&json).unwrap();
+            binc::deserialize(black_box(&schema), black_box(&doc), &mut binc_buffer).unwrap()
+        })
+    });
+    group.bench_function("deserialize_binc_with_doc", |b| {
+        b.iter(|| {
+            binc_buffer.clear();
+            binc::deserialize(black_box(&schema), black_box(&doc), &mut binc_buffer).unwrap()
         })
     });
     group.bench_function("deserialize_fast", |b| {
         b.iter(|| {
             buffer.clear();
-            fast::deserialize_into(black_box(&schema), black_box(&json), &mut buffer)
+            fast::deserialize_into(black_box(&schema), black_box(&json), &mut buffer).unwrap()
         })
     });
     group.finish();
@@ -72,16 +90,17 @@ fn criterion_benchmark(c: &mut Criterion) {
     group.measurement_time(Duration::from_secs(30));
     group.bench_function("serialize_slow", |b| {
         b.iter(|| {
-            let doc = slow::serialize(black_box(&schema), black_box(&binary)).unwrap();
-            serde_json::to_string_pretty(&doc)
+            slow::serialize(black_box(&schema), black_box(&binary)).unwrap()
+        })
+    });
+    group.bench_function("serialize_binc", |b| {
+        b.iter(|| {
+            binc::serialize(black_box(&schema), black_box(&binc_binary)).unwrap()
         })
     });
     group.bench_function("serialize_fast", |b| {
         b.iter(|| {
-            let mut buffer = vec![];
-            let mut ser = serde_json::Serializer::pretty(&mut buffer);
-            fast::serialize(&mut ser, black_box(&schema), black_box(&binary)).unwrap();
-            String::from_utf8(buffer).unwrap()
+            fast::serialize(serde_json::value::Serializer, black_box(&schema), black_box(&binary)).unwrap()
         })
     });
     group.finish();

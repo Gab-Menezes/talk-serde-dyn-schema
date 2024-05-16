@@ -3,6 +3,7 @@
 pub mod fast;
 pub mod flatbin;
 pub mod slow;
+pub mod binc;
 mod tests;
 pub mod ty;
 
