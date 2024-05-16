@@ -45,7 +45,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     let json = serde_json::to_string_pretty(&doc).unwrap();
     let binary = slow::deserialize_alloc(&schema, &doc).unwrap();
-    let binc_binary = binc::deserialize_alloc(&schema, &doc).unwrap();
+    let binc_binary = binc::serialize(&schema, &doc).unwrap();
 
     let mut buffer = FlatbinBuf::new();
     let mut binc_buffer = Vec::new();
@@ -69,13 +69,13 @@ fn criterion_benchmark(c: &mut Criterion) {
         b.iter(|| {
             binc_buffer.clear();
             let doc = serde_json::from_str(&json).unwrap();
-            binc::deserialize(black_box(&schema), black_box(&doc), &mut binc_buffer).unwrap()
+            binc::serialize_into(black_box(&schema), black_box(&doc), &mut binc_buffer).unwrap()
         })
     });
     group.bench_function("deserialize_binc_with_doc", |b| {
         b.iter(|| {
             binc_buffer.clear();
-            binc::deserialize(black_box(&schema), black_box(&doc), &mut binc_buffer).unwrap()
+            binc::serialize_into(black_box(&schema), black_box(&doc), &mut binc_buffer).unwrap()
         })
     });
     group.bench_function("deserialize_fast", |b| {
@@ -95,7 +95,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     });
     group.bench_function("serialize_binc", |b| {
         b.iter(|| {
-            binc::serialize(black_box(&schema), black_box(&binc_binary)).unwrap()
+            binc::deserialize(black_box(&schema), black_box(&binc_binary)).unwrap()
         })
     });
     group.bench_function("serialize_fast", |b| {

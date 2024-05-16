@@ -4,10 +4,9 @@ pub use ser::*;
 mod de;
 mod ser;
 
-
 #[cfg(test)]
 mod test {
-    use super::{deserialize_alloc, deserialize, serialize};
+    use super::{deserialize, serialize, serialize_into};
     use crate::{array_def, struct_def, ty::Ty, JsonValue};
 
     // #[test]
@@ -39,31 +38,31 @@ mod test {
             "rustacean": true,
         });
 
-        let bytes = deserialize_alloc(&ty, &value).unwrap();
+        let bytes = serialize(&ty, &value).unwrap();
         println!("{:?}", bytes);
-        let new_value = serialize(&ty, &bytes).unwrap();
+        let new_value = deserialize(&ty, &bytes).unwrap();
         assert_eq!(value, new_value);
     }
 
     #[test]
     fn only_string() {
         let ty = Ty::String;
-        let value =  "Alexander".into();
+        let value = "Alexander".into();
 
-        let bytes = deserialize_alloc(&ty, &value).unwrap();
+        let bytes = serialize(&ty, &value).unwrap();
         println!("{:?}", bytes);
-        let new_value = serialize(&ty, &bytes).unwrap();
+        let new_value = deserialize(&ty, &bytes).unwrap();
         assert_eq!(value, new_value);
     }
 
     #[test]
     fn vec_string() {
         let ty = array_def!(Ty::String);
-        let value =  Vec::from(["Alexander".to_string(), "Gabriel".to_string()]).into();
+        let value = Vec::from(["Alexander".to_string(), "Gabriel".to_string()]).into();
 
-        let bytes = deserialize_alloc(&ty, &value).unwrap();
+        let bytes = serialize(&ty, &value).unwrap();
         println!("{:?}", bytes);
-        let new_value = serialize(&ty, &bytes).unwrap();
+        let new_value = deserialize(&ty, &bytes).unwrap();
         assert_eq!(value, new_value);
     }
 
@@ -97,9 +96,9 @@ mod test {
             "b": [100, 50, 200, 255, 0]
         });
 
-        let bytes = deserialize_alloc(&ty, &value).unwrap();
+        let bytes = serialize(&ty, &value).unwrap();
         println!("{:?}", bytes);
-        let new_value = serialize(&ty, &bytes).unwrap();
+        let new_value = deserialize(&ty, &bytes).unwrap();
         assert_eq!(value, new_value);
     }
 }

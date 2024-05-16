@@ -1,125 +1,169 @@
-use std::collections::HashSet;
+use std::marker::PhantomData;
 
-use crate::{
-    ty::{Field, Ty},
-    JsonValue,
+use bincode::{de::read::IoReader, DefaultOptions, Options};
+use serde::{
+    de::{DeserializeSeed, MapAccess, SeqAccess, Visitor},
+    ser::SerializeMap,
+    Deserialize, Deserializer, Serialize, Serializer,
 };
-use bincode::Options;
 use serde_json::Map;
-use thiserror::Error;
 
-#[derive(Error, Debug)]
-pub enum Error {
-    #[error("expected {expected}, got {got}")]
-    UnexpectedType { expected: &'static str, got: &'static str },
-    #[error("an element in a byte array was not an integer between 0 and 255")]
-    NotAByte,
-    #[error("expected {expected_len} fields ({expected:?}), got {got_len} ({got:?}). Missing: {missing:?} | Extra: {extra:?}")]
-    FieldMismatch {
-        expected_len: usize,
-        expected: HashSet<String>,
-        got_len: usize,
-        got: HashSet<String>,
-        missing: HashSet<String>,
-        extra: HashSet<String>,
-    },
-    #[error("can't serialize data")]
-    Serialization,
-}
+use crate::ty::{Field, Ty};
 
-pub type Result<T> = std::result::Result<T, Error>;
-
-pub fn deserialize_alloc(ty: &Ty, value: &JsonValue) -> Result<Vec<u8>> {
-    let mut buffer = Vec::new();
-    deserialize(ty, value, &mut buffer)?;
-    Ok(buffer)
-}
-
-pub fn deserialize(ty: &Ty, value: &JsonValue, buffer: &mut Vec<u8>) -> Result<()> {
+pub fn deserialize(ty: &Ty, value: &[u8]) -> bincode::Result<serde_json::Value> {
     let opt = bincode::DefaultOptions::new();
-    match ty {
-        Ty::Bool => {
-            let value = value.as_bool().ok_or_else(|| unexpected_type("a boolean", value))?;
-            opt.serialize_into(buffer, &value).map_err(|_| Error::Serialization)?;
-        }
-        Ty::U64 => {
-            let value = value
-                .as_u64()
-                .ok_or_else(|| unexpected_type("a non-negative integer", value))?;
-            opt.serialize_into(buffer, &value).map_err(|_| Error::Serialization)?;
-        }
-        Ty::I64 => {
-            let value = value.as_i64().ok_or_else(|| unexpected_type("an integer", value))?;
-            opt.serialize_into(buffer, &value).map_err(|_| Error::Serialization)?;
-        }
-        Ty::F64 => {
-            let value = value.as_f64().ok_or_else(|| unexpected_type("a number", value))?;
-            opt.serialize_into(buffer, &value).map_err(|_| Error::Serialization)?;
-        }
-        Ty::Bytes => {
-            let bytes = value.as_array().ok_or_else(|| unexpected_type("a byte array", value))?;
-            opt.serialize_into(&mut *buffer, &bytes.len())
-                .map_err(|_| Error::Serialization)?;
-            for b in bytes {
-                let b: u8 = b
-                    .as_u64()
-                    .ok_or(Error::NotAByte)?
-                    .try_into()
-                    .map_err(|_| Error::NotAByte)?;
-                opt.serialize_into(&mut *buffer, &b).map_err(|_| Error::Serialization)?;
-            }
-        }
-        Ty::String => {
-            let value = value.as_str().ok_or_else(|| unexpected_type("a string", value))?;
-            opt.serialize_into(buffer, value).map_err(|_| Error::Serialization)?;
-        }
-        Ty::Array { inner } => {
-            let array = value.as_array().ok_or_else(|| unexpected_type("an array", value))?;
-            opt.serialize_into(&mut *buffer, &array.len())
-                .map_err(|_| Error::Serialization)?;
-            for element in array {
-                deserialize(inner, element, buffer)?;
-            }
-        }
-        Ty::Struct { fields } => {
-            let object = value.as_object().ok_or_else(|| unexpected_type("an object", value))?;
+    let seed = TypedValue { ty };
+    opt.deserialize_from_seed(seed, value)
+}
 
-            if fields.len() != object.len() {
-                return Err(field_mismatch(fields, object));
-            }
+#[derive(Copy, Clone)]
+struct TypedValue<'a> {
+    ty: &'a Ty,
+}
 
-            for field in fields.iter() {
-                let value = object.get(&*field.name).ok_or_else(|| field_mismatch(fields, object))?;
-                deserialize(&field.ty, value, buffer)?;
-            }
+impl<'de, 'a> DeserializeSeed<'de> for TypedValue<'a> {
+    type Value = serde_json::Value;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        match self.ty {
+            Ty::Bool => deserializer.deserialize_bool(BoolVisitor),
+            Ty::U64 => deserializer.deserialize_u64(IntVisitor),
+            Ty::I64 => deserializer.deserialize_u64(IntVisitor),
+            Ty::F64 => deserializer.deserialize_u64(FloatVisitor),
+            Ty::Bytes => deserializer.deserialize_bytes(BytesVisitor),
+            Ty::String => deserializer.deserialize_string(StringVisitor),
+            Ty::Array { inner } => deserializer.deserialize_seq(ArrayVisitor { inner }),
+            Ty::Struct { fields } => deserializer.deserialize_tuple(fields.len(), StructVisitor { fields }),
         }
     }
-    Ok(())
 }
 
-fn unexpected_type(expected: &'static str, value: &JsonValue) -> Error {
-    let got = match value {
-        JsonValue::Null => "null",
-        JsonValue::Bool(_) => "a boolean",
-        JsonValue::Number(_) => "a number",
-        JsonValue::String(_) => "a string",
-        JsonValue::Array(_) => "an array",
-        JsonValue::Object(_) => "an object",
-    };
-    Error::UnexpectedType { expected, got }
+struct IntVisitor;
+struct BoolVisitor;
+struct FloatVisitor;
+struct StringVisitor;
+struct BytesVisitor;
+
+impl<'de> Visitor<'de> for IntVisitor {
+    type Value = serde_json::Value;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(formatter, "an integer")
+    }
+
+    fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(v.serialize(serde_json::value::Serializer).unwrap())
+    }
+
+    fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(v.serialize(serde_json::value::Serializer).unwrap())
+    }
+}
+impl<'de> Visitor<'de> for BoolVisitor {
+    type Value = serde_json::Value;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(formatter, "a bool")
+    }
+
+    fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(v.serialize(serde_json::value::Serializer).unwrap())
+    }
+}
+impl<'de> Visitor<'de> for FloatVisitor {
+    type Value = serde_json::Value;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(formatter, "a float")
+    }
+
+    fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(v.serialize(serde_json::value::Serializer).unwrap())
+    }
+}
+impl<'de> Visitor<'de> for StringVisitor {
+    type Value = serde_json::Value;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(formatter, "a string")
+    }
+
+    fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(v.serialize(serde_json::value::Serializer).unwrap())
+    }
+}
+impl<'de> Visitor<'de> for BytesVisitor {
+    type Value = serde_json::Value;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(formatter, "a strubg")
+    }
+
+    fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(v.serialize(serde_json::value::Serializer).unwrap())
+    }
 }
 
-fn field_mismatch<'a>(fields: &Box<[Field]>, object: &Map<String, JsonValue>) -> Error {
-    let expected: HashSet<_> = fields.into_iter().map(|field| field.name.to_string()).collect();
-    let got: HashSet<_> = object.into_iter().map(|(name, _)| name.clone()).collect();
-    let extra: HashSet<_> = got.difference(&expected).cloned().collect();
-    let missing: HashSet<_> = expected.difference(&got).cloned().collect();
-    Error::FieldMismatch {
-        expected_len: fields.len(),
-        expected,
-        got_len: object.len(),
-        got,
-        missing,
-        extra
+struct StructVisitor<'a> {
+    pub fields: &'a [Field],
+}
+impl<'a, 'de> Visitor<'de> for StructVisitor<'a> {
+    type Value = serde_json::Value;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(formatter, "an object")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let mut map = Map::with_capacity(self.fields.len());
+        for field in self.fields {
+            let seed = TypedValue { ty: &field.ty };
+            let v = seq
+                .next_element_seed(seed)?
+                .ok_or_else(|| serde::de::Error::custom(format!("missing value for field {:?}", self.fields)))?;
+            map.insert(field.name.to_string(), v);
+        }
+        Ok(serde_json::Value::Object(map))
+    }
+}
+
+struct ArrayVisitor<'a> {
+    pub inner: &'a Ty,
+}
+impl<'a, 'de> Visitor<'de> for ArrayVisitor<'a> {
+    type Value = serde_json::Value;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(formatter, "an array")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let tv = TypedValue { ty: &self.inner };
+        let mut v = Vec::new();
+        while let Some(val) = seq.next_element_seed(tv)? {
+            v.push(val);
+        }
+        Ok(serde_json::Value::Array(v))
     }
 }
